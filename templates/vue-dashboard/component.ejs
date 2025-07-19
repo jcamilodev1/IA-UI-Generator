@@ -1,0 +1,20 @@
+<%# component.ejs: solo cabecera común y un marcador para el cuerpo %>
+<template>
+  <!-- COMPONENT_BODY -->
+</template>
+
+<script lang="ts">
+import { defineComponent } from 'vue';
+<% if (styles.includes('primevue')) { %>
+import { DataTable, Column } from 'primevue';
+<% } %>
+
+export default defineComponent({
+  name: '<%= name %>',
+  props: <%= JSON.stringify(props, null, 2) %>,
+});
+</script>
+
+<style scoped>
+/* aquí podrías añadir estilos CSS si quisieras */
+</style>
