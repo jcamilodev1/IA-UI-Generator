@@ -8,58 +8,29 @@ import yargs from 'yargs/yargs';
 import dotenv from 'dotenv';
 import { SYSTEM_PROMPT } from '../constants/prompts.js';
 
-// Cargar variables de entorno
-dotenv.config();
+function loadEnvAndConfig() {
+  dotenv.config();
+  const __filename = fileURLToPath(import.meta.url);
+  const __dirname  = path.dirname(__filename);
+  return { __filename, __dirname };
+}
 
-//
-// Configuración ESM para __dirname
-//
-const __filename = fileURLToPath(import.meta.url);
-const __dirname  = path.dirname(__filename);
+function parseArguments() {
+  return yargs(hideBin(process.argv))
+    .option('prompt', {
+      type: 'string',
+      demandOption: true,
+      describe: 'Descripción del dashboard o conjunto de componentes a generar'
+    })
+    .option('styles', {
+      type: 'string',
+      default: 'tailwind,element-plus',
+      describe: 'Librerías de estilos a usar, separadas por comas (ej: tailwind,element-plus)'
+    })
+    .parse();
+}
 
-//
-// Parseo de args dinámicos
-//
-const argv = yargs(hideBin(process.argv))
-  .option('prompt', {
-    type: 'string',
-    demandOption: true,
-    describe: 'Descripción del dashboard o conjunto de componentes a generar'
-  })
-  .option('styles', {
-    type: 'string',
-    default: 'tailwind,element-plus',
-    describe: 'Librerías de estilos a usar, separadas por comas (ej: tailwind,element-plus)'
-  })
-  .parse();
-
-async function main() {
-  if (!process.env.OPENAI_API_KEY) {
-    console.error('❌  Define OPENAI_API_KEY en tu archivo .env o variables de entorno.');
-    process.exit(1);
-  }
-  const openai = new OpenAI({ 
-    apiKey: process.env.OPENAI_API_KEY 
-  });
-
-  // Directorios del proyecto
-  const projectDir = path.join(__dirname, '../workspace', `project-${Date.now()}`);
-  const compDir    = path.join(projectDir, 'src/components');
-  const pagesDir   = path.join(projectDir, 'src');
-  await fs.ensureDir(compDir);
-
-  // Copia tu plantilla base
-  await fs.copy(path.join(__dirname, '../templates/vue-dashboard'), projectDir);
-
-  // Prepara array de estilos
-  const stylesArray = argv.styles.split(',').map(s => s.trim()).filter(Boolean);
-
-  //
-  // 1) Pide a la IA el spec en JSON
-  //
-  const systemSpec = SYSTEM_PROMPT(stylesArray);
-  const userSpec = `Descripción del dashboard: "${argv.prompt}"`;
-
+async function getSpecFromAI(openai, systemSpec, userSpec) {
   const specRes = await openai.chat.completions.create({
     model: 'gpt-4o-mini',
     messages: [
@@ -67,13 +38,13 @@ async function main() {
       { role: 'user',   content: userSpec }
     ]
   });
-
-  // Extrae y limpia la respuesta
   let specText = specRes.choices[0].message.content.trim();
-  // En algunos casos hay texto extra, intenta aislar el JSON
   const jsonMatch = specText.match(/\{[\s\S]*\}$/);
   specText = jsonMatch ? jsonMatch[0] : specText;
+  return specText;
+}
 
+function parseSpec(specText) {
   let spec;
   try {
     spec = JSON.parse(specText);
@@ -81,11 +52,11 @@ async function main() {
     console.error('❌ Error al parsear JSON de la IA:\n', specText);
     process.exit(1);
   }
+  return spec;
+}
 
-  //
-  // 2) Genera cada componente
-  //
-  for (const comp of spec.components) {
+async function generateComponents(components, compDir) {
+  for (const comp of components) {
     let code = comp.content.trim()
       .replace(/^```(?:vue)?\r?\n?/, '')
       .replace(/\r?\n?```$/, '');
@@ -97,20 +68,51 @@ async function main() {
     await fs.writeFile(filePath, code, 'utf8');
     console.log(`✅ Componente generado: src/components/${comp.filename}`);
   }
+}
 
-  //
-  // 3) Genera App.vue
-  //
-  let appCode = spec.app.content.trim()
+async function generateAppFile(app, pagesDir) {
+  let appCode = app.content.trim()
     .replace(/^```(?:vue)?\r?\n?/, '')
     .replace(/\r?\n?```$/, '')
     .replace(
       /from\s+['"]src\/components\/([^'"]+)['"]/g,
       `from './components/$1'`
     );
-  const appPath = path.join(pagesDir, spec.app.filename);
+  const appPath = path.join(pagesDir, app.filename);
   await fs.writeFile(appPath, appCode, 'utf8');
-  console.log(`✅ Página generada: src/${spec.app.filename}`);
+  console.log(`✅ Página generada: src/${app.filename}`);
+}
+
+async function main() {
+  if (!process.env.OPENAI_API_KEY) {
+    console.error('❌  Define OPENAI_API_KEY en tu archivo .env o variables de entorno.');
+    process.exit(1);
+  }
+  const openai = new OpenAI({ 
+    apiKey: process.env.OPENAI_API_KEY 
+  });
+
+  // Directorios del proyecto
+  const { __dirname } = loadEnvAndConfig();
+  const argv = parseArguments();
+  const projectDir = path.join(__dirname, '../workspace', `project-${Date.now()}`);
+  const compDir    = path.join(projectDir, 'src/components');
+  const pagesDir   = path.join(projectDir, 'src');
+  await fs.ensureDir(compDir);
+
+  await fs.copy(path.join(__dirname, '../templates/vue-dashboard'), projectDir);
+
+  const stylesArray = argv.styles.split(',').map(s => s.trim()).filter(Boolean);
+
+
+  const systemSpec = SYSTEM_PROMPT(stylesArray);
+  const userSpec = `Descripción del dashboard: "${argv.prompt}"`;
+  const specText = await getSpecFromAI(openai, systemSpec, userSpec);
+  const spec = parseSpec(specText);
+
+  await generateComponents(spec.components, compDir);
+
+  await generateAppFile(spec.app, pagesDir);
 
   console.log('\n🎉 ¡Proyecto listo!');
   console.log(`cd ${projectDir} && npm install && npm run dev`);
